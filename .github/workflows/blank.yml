@@ -12,97 +12,44 @@ jobs:
       - name: Install and Configure XRDP
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xrdp \
             xfce4 \
             xfce4-goodies \
             dbus-x11 \
-            xfce4-session \
-            xorg \
-            x11-xserver-utils
+            xorg
 
-          # FIX 1: Override startwm.sh — cara paling andal agar XFCE4 terbaca xrdp
-          sudo bash -c 'cat > /etc/xrdp/startwm.sh << EOF
-#!/bin/sh
-unset DBUS_SESSION_BUS_ADDRESS
-unset XDG_RUNTIME_DIR
-export XDG_CONFIG_DIRS=/etc:\$XDG_CONFIG_DIRS
-exec startxfce4
-EOF'
-          sudo chmod +x /etc/xrdp/startwm.sh
+          # FIX 1: Sisipkan perintah unset ke startwm.sh bawaan tanpa menghapus konfigurasi default Ubuntu
+          sudo sed -i.bak '/test -x \/etc\/X11\/Xsession/i unset DBUS_SESSION_BUS_ADDRESS\nunset XDG_RUNTIME_DIR' /etc/xrdp/startwm.sh
 
-          # FIX 2: .xsession global sebagai fallback
+          # FIX 2: Jadikan XFCE4 sebagai default session untuk user baru
           echo "startxfce4" | sudo tee /etc/skel/.xsession
           sudo chmod +x /etc/skel/.xsession
 
-          # FIX 3: Pastikan direktori xfce4 session ada
-          sudo mkdir -p /etc/xdg/xfce4/
-          sudo mkdir -p /usr/share/xsessions/
-
-          # FIX 4: Daftarkan sesi XFCE4
-          if [ ! -f /usr/share/xsessions/xfce.desktop ]; then
-            sudo bash -c 'cat > /usr/share/xsessions/xfce.desktop << EOF
-[Desktop Entry]
-Name=Xfce Session
-Comment=Use this session to run Xfce as your desktop environment
-Exec=startxfce4
-Icon=
-Type=Application
-EOF'
-          fi
-
-          # FIX 5: Tambahkan xrdp ke group ssl-cert agar tidak error sertifikat
+          # FIX 3: Tambahkan xrdp ke group ssl-cert
           sudo adduser xrdp ssl-cert || true
 
           # Aktifkan dan restart xrdp
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
-          sudo systemctl status xrdp --no-pager
-
-          # Buka port RDP
           sudo ufw allow 3389/tcp || true
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User with Static Password
         run: |
-          # FIX 6: Generate password pakai dd — tanpa "tr: write error: Broken pipe"
-          UPPER=$(   cat /dev/urandom | LC_ALL=C tr -dc 'A-Z'    | dd bs=1 count=4 2>/dev/null)
-          LOWER=$(   cat /dev/urandom | LC_ALL=C tr -dc 'a-z'    | dd bs=1 count=4 2>/dev/null)
-          NUMBERS=$( cat /dev/urandom | LC_ALL=C tr -dc '0-9'    | dd bs=1 count=4 2>/dev/null)
-          SPECIAL=$( cat /dev/urandom | LC_ALL=C tr -dc '@#$%^&' | dd bs=1 count=4 2>/dev/null)
-
-          # Acak urutan semua karakter
-          PASSWORD=$(printf '%s' "${UPPER}${LOWER}${NUMBERS}${SPECIAL}" \
-            | fold -w1 | shuf | tr -d '\n')
+          # Set password manual
+          PASSWORD="Aldiaz15"
 
           # Buat user rdpuser
           sudo useradd -m -s /bin/bash rdpuser
           echo "rdpuser:${PASSWORD}" | sudo chpasswd
           sudo usermod -aG sudo rdpuser
 
-          # FIX 7: Set .xsession dan .xsessionrc per-user
-          sudo bash -c 'cat > /home/rdpuser/.xsession << EOF
-#!/bin/sh
-unset DBUS_SESSION_BUS_ADDRESS
-unset XDG_RUNTIME_DIR
-export XDG_CONFIG_DIRS=/etc:\$XDG_CONFIG_DIRS
-exec startxfce4
-EOF'
-          sudo bash -c 'echo "startxfce4" > /home/rdpuser/.xsessionrc'
-          sudo chmod +x /home/rdpuser/.xsession
+          # Terapkan session XFCE4 secara spesifik untuk rdpuser
+          echo "startxfce4" | sudo tee /home/rdpuser/.xsession
           sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
-          sudo chown rdpuser:rdpuser /home/rdpuser/.xsessionrc
 
-          # Buat direktori config XFCE4 untuk user
-          sudo mkdir -p /home/rdpuser/.config/xfce4
-          sudo chown -R rdpuser:rdpuser /home/rdpuser/.config
-
-          echo "RDP_CREDS=User: rdpuser | Password: ${PASSWORD}" >> $GITHUB_ENV
-
-          # Verifikasi user berhasil dibuat
-          if ! id rdpuser &>/dev/null; then
-            echo "::error::User creation failed"
-            exit 1
-          fi
+          # Simpan password ke environment GitHub
+          echo "RDP_PASSWORD=${PASSWORD}" >> $GITHUB_ENV
 
       - name: Install Tailscale
         run: |
@@ -145,11 +92,11 @@ EOF'
           echo "http://www.youtube.com/@TipsUNIX"
           echo "Address  : $TAILSCALE_IP"
           echo "Username : rdpuser"
-          echo "Password : $RDP_CREDS"
+          echo "Password : $RDP_PASSWORD"
           echo "=================="
           echo ""
 
-          # Jaga runner tetap aktif sampai workflow dibatalkan manual
+          # Jaga runner tetap aktif
           while true; do
             echo "[$(date)] RDP Active - Cancel workflow to terminate"
             sleep 300
