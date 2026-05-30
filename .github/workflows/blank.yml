@@ -1,0 +1,104 @@
+name: RDP_TIPSUNIX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Install and Configure XRDP
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xrdp xfce4 xfce4-goodies
+
+          # Set XFCE as default desktop for xrdp
+          echo "startxfce4" | sudo tee /etc/skel/.xsession
+          echo "startxfce4" | sudo tee /root/.xsession
+
+          # Enable and start xrdp
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+
+          # Allow RDP port through firewall
+          sudo ufw allow 3389/tcp || true
+
+      - name: Create RDP User with Secure Password
+        run: |
+          # Generate a secure random password
+          UPPER=$(tr -dc 'A-Z' </dev/urandom | head -c 4)
+          LOWER=$(tr -dc 'a-z' </dev/urandom | head -c 4)
+          NUMBERS=$(tr -dc '0-9' </dev/urandom | head -c 4)
+          SPECIAL=$(tr -dc '!@#$%^&*' </dev/urandom | head -c 4)
+          PASSWORD=$(echo "${UPPER}${LOWER}${NUMBERS}${SPECIAL}" | fold -w1 | shuf | tr -d '\n')
+
+          # Create the user
+          sudo useradd -m -s /bin/bash rdpuser
+          echo "rdpuser:${PASSWORD}" | sudo chpasswd
+          sudo usermod -aG sudo rdpuser
+
+          # Set XFCE session for the new user
+          echo "startxfce4" | sudo tee /home/rdpuser/.xsession
+          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+
+          echo "RDP_CREDS=User: rdpuser | Password: ${PASSWORD}" >> $GITHUB_ENV
+
+          # Verify user creation
+          if ! id rdpuser &>/dev/null; then
+            echo "::error::User creation failed"
+            exit 1
+          fi
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
+
+      - name: Establish Tailscale Connection
+        run: |
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-runner-${{ github.run_id }}
+
+          # Wait for Tailscale to assign an IP
+          TS_IP=""
+          RETRIES=0
+          while [ -z "$TS_IP" ] && [ "$RETRIES" -lt 10 ]; do
+            TS_IP=$(tailscale ip -4 2>/dev/null || true)
+            sleep 5
+            RETRIES=$((RETRIES + 1))
+          done
+
+          if [ -z "$TS_IP" ]; then
+            echo "::error::Tailscale IP not assigned. Exiting."
+            exit 1
+          fi
+          echo "TAILSCALE_IP=${TS_IP}" >> $GITHUB_ENV
+
+      - name: Verify RDP Accessibility
+        run: |
+          echo "Tailscale IP: $TAILSCALE_IP"
+
+          # Test connectivity on port 3389
+          if ! nc -zv "$TAILSCALE_IP" 3389 2>&1; then
+            echo "::error::TCP connection to RDP port 3389 failed"
+            exit 1
+          fi
+          echo "TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          echo ""
+          echo "=== RDP ACCESS ==="
+          echo "http://www.youtube.com/@TipsUNIX"
+          echo "Address  : $TAILSCALE_IP"
+          echo "Username : rdpuser"
+          echo "Password : $RDP_CREDS"
+          echo "=================="
+          echo ""
+
+          # Keep runner active indefinitely (or until manually cancelled)
+          while true; do
+            echo "[$(date)] RDP Active - Cancel workflow to terminate"
+            sleep 300
+          done
