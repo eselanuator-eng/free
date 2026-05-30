@@ -21,34 +21,25 @@ jobs:
             xorg \
             x11-xserver-utils
 
-          # =============================================
-          # FIX: "Unable to load a failsafe session"
-          # Penyebab: .xsession tidak dibaca xrdp dengan benar
-          # Solusi: pakai startwm.sh dan .xsessionrc
-          # =============================================
-
-          # Metode 1: override startwm.sh (cara paling andal)
+          # FIX 1: Override startwm.sh — cara paling andal agar XFCE4 terbaca xrdp
           sudo bash -c 'cat > /etc/xrdp/startwm.sh << EOF
 #!/bin/sh
 unset DBUS_SESSION_BUS_ADDRESS
 unset XDG_RUNTIME_DIR
+export XDG_CONFIG_DIRS=/etc:\$XDG_CONFIG_DIRS
 exec startxfce4
 EOF'
           sudo chmod +x /etc/xrdp/startwm.sh
 
-          # Metode 2: set .xsession global sebagai fallback
+          # FIX 2: .xsession global sebagai fallback
           echo "startxfce4" | sudo tee /etc/skel/.xsession
           sudo chmod +x /etc/skel/.xsession
 
-          # Fix XDG_CONFIG_DIRS — penyebab utama error di log
-          echo 'export XDG_CONFIG_DIRS=/etc:$XDG_CONFIG_DIRS' \
-            | sudo tee -a /etc/xrdp/startwm.sh
-
-          # Pastikan direktori xfce4 session ada
+          # FIX 3: Pastikan direktori xfce4 session ada
           sudo mkdir -p /etc/xdg/xfce4/
           sudo mkdir -p /usr/share/xsessions/
 
-          # Daftarkan sesi XFCE4 jika belum ada
+          # FIX 4: Daftarkan sesi XFCE4
           if [ ! -f /usr/share/xsessions/xfce.desktop ]; then
             sudo bash -c 'cat > /usr/share/xsessions/xfce.desktop << EOF
 [Desktop Entry]
@@ -60,42 +51,40 @@ Type=Application
 EOF'
           fi
 
-          # Tambahkan xrdp user ke group ssl-cert
+          # FIX 5: Tambahkan xrdp ke group ssl-cert agar tidak error sertifikat
           sudo adduser xrdp ssl-cert || true
 
-          # Restart xrdp dengan config baru
+          # Aktifkan dan restart xrdp
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
-
-          # Verifikasi xrdp berjalan
           sudo systemctl status xrdp --no-pager
 
-          # Allow RDP port
+          # Buka port RDP
           sudo ufw allow 3389/tcp || true
 
       - name: Create RDP User with Secure Password
         run: |
-          # Generate secure random password
-          UPPER=$(tr -dc 'A-Z' </dev/urandom | head -c 4)
-          LOWER=$(tr -dc 'a-z' </dev/urandom | head -c 4)
-          NUMBERS=$(tr -dc '0-9' </dev/urandom | head -c 4)
-          SPECIAL=$(tr -dc '@#$%' </dev/urandom | head -c 4)
+          # FIX 6: Generate password pakai dd — tanpa "tr: write error: Broken pipe"
+          UPPER=$(   cat /dev/urandom | LC_ALL=C tr -dc 'A-Z'    | dd bs=1 count=4 2>/dev/null)
+          LOWER=$(   cat /dev/urandom | LC_ALL=C tr -dc 'a-z'    | dd bs=1 count=4 2>/dev/null)
+          NUMBERS=$( cat /dev/urandom | LC_ALL=C tr -dc '0-9'    | dd bs=1 count=4 2>/dev/null)
+          SPECIAL=$( cat /dev/urandom | LC_ALL=C tr -dc '@#$%^&' | dd bs=1 count=4 2>/dev/null)
+
+          # Acak urutan semua karakter
           PASSWORD=$(printf '%s' "${UPPER}${LOWER}${NUMBERS}${SPECIAL}" \
             | fold -w1 | shuf | tr -d '\n')
 
-          # Buat user
+          # Buat user rdpuser
           sudo useradd -m -s /bin/bash rdpuser
           echo "rdpuser:${PASSWORD}" | sudo chpasswd
           sudo usermod -aG sudo rdpuser
 
-          # =============================================
-          # FIX: set .xsession dan .xsessionrc per-user
-          # agar xrdp tahu desktop apa yang dijalankan
-          # =============================================
+          # FIX 7: Set .xsession dan .xsessionrc per-user
           sudo bash -c 'cat > /home/rdpuser/.xsession << EOF
 #!/bin/sh
 unset DBUS_SESSION_BUS_ADDRESS
 unset XDG_RUNTIME_DIR
+export XDG_CONFIG_DIRS=/etc:\$XDG_CONFIG_DIRS
 exec startxfce4
 EOF'
           sudo bash -c 'echo "startxfce4" > /home/rdpuser/.xsessionrc'
@@ -109,7 +98,7 @@ EOF'
 
           echo "RDP_CREDS=User: rdpuser | Password: ${PASSWORD}" >> $GITHUB_ENV
 
-          # Verifikasi
+          # Verifikasi user berhasil dibuat
           if ! id rdpuser &>/dev/null; then
             echo "::error::User creation failed"
             exit 1
@@ -124,6 +113,7 @@ EOF'
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
             --hostname=gh-runner-${{ github.run_id }}
 
+          # Tunggu Tailscale mendapat IP
           TS_IP=""
           RETRIES=0
           while [ -z "$TS_IP" ] && [ "$RETRIES" -lt 10 ]; do
@@ -159,6 +149,7 @@ EOF'
           echo "=================="
           echo ""
 
+          # Jaga runner tetap aktif sampai workflow dibatalkan manual
           while true; do
             echo "[$(date)] RDP Active - Cancel workflow to terminate"
             sleep 300
